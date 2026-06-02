@@ -1,0 +1,2 @@
+ALTER TABLE public.allowed_emails ADD COLUMN IF NOT EXISTS eligible BOOLEAN DEFAULT true;
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS eligible BOOLEAN DEFAULT true;
