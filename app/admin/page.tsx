@@ -34,21 +34,29 @@ export default function AdminPanel() {
 
   // Emails
   const [emailToAdd, setEmailToAdd] = useState('');
-  const [emailGroup, setEmailGroup] = useState('entregador');
+  const [cpfToAdd, setCpfToAdd] = useState('');
+  const [emailGroup, setEmailGroup] = useState('cliente');
   const [emailMessage, setEmailMessage] = useState('');
   const [allowedEmails, setAllowedEmails] = useState<any[]>([]);
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [csvMessage, setCsvMessage] = useState('');
+  const [csvConflicts, setCsvConflicts] = useState<any[]>([]);
+  const [csvToInsert, setCsvToInsert] = useState<any[]>([]);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [emailSearch, setEmailSearch] = useState('');
+  const [emailFilter, setEmailFilter] = useState('todos');
 
   // Users (profiles)
   const [profiles, setProfiles] = useState<any[]>([]);
+  const [profileSearch, setProfileSearch] = useState('');
+  const [profileFilter, setProfileFilter] = useState('todos');
 
   // Dictionary
   const [translations, setTranslations] = useState<any[]>([]);
 
   // Ranking
   const [ranking, setRanking] = useState<any[]>([]);
-  const [rankingFilter, setRankingFilter] = useState('entregador');
+  const [rankingFilter, setRankingFilter] = useState('cliente');
 
   // Matches
   const [matches, setMatches] = useState<any[]>([]);
@@ -103,24 +111,132 @@ export default function AdminPanel() {
     loadColabEmails();
   };
 
+  // ── Helper Pagination ───────────────────────────────────────────────────────
+  const fetchAllRows = async (tableName: string, orderBy: string, ascending: boolean = false) => {
+    let allData: any[] = [];
+    let from = 0;
+    const step = 1000;
+    while (true) {
+      const { data, error } = await supabase.from(tableName).select('*').order(orderBy, { ascending }).range(from, from + step - 1);
+      if (error || !data || data.length === 0) break;
+      allData = [...allData, ...data];
+      if (data.length < step) break;
+      from += step;
+    }
+    return allData;
+  };
+
   // ── Emails ────────────────────────────────────────────────────────────────
   const loadEmails = async () => {
-    const { data } = await supabase.from('allowed_emails').select('*').order('created_at', { ascending: false });
-    if (data) setAllowedEmails(data);
+    const data = await fetchAllRows('allowed_emails', 'created_at', false);
+    setAllowedEmails(data);
   };
 
   const handleAddEmail = async (e: React.FormEvent) => {
     e.preventDefault();
     setEmailMessage('Adicionando...');
-    const { error } = await supabase.from('allowed_emails').insert([{ email: emailToAdd, user_group: emailGroup }]);
-    if (error) setEmailMessage(`Erro: ${error.message}`);
-    else { setEmailMessage('E-mail autorizado!'); setEmailToAdd(''); loadEmails(); }
+    const cleanCpf = cpfToAdd.replace(/\D/g, '') || null;
+    const { error } = await supabase.from('allowed_emails').insert([{ email: emailToAdd, cpf: cleanCpf, user_group: emailGroup }]);
+    if (error) {
+      if (error.message.includes('unique constraint')) {
+        setEmailMessage('Erro: Este E-mail ou CPF já está cadastrado.');
+      } else {
+        setEmailMessage(`Erro: ${error.message}`);
+      }
+    } else { 
+      setEmailMessage('E-mail autorizado!'); 
+      setEmailToAdd(''); 
+      setCpfToAdd(''); 
+      loadEmails(); 
+    }
   };
 
   const handleDeleteEmail = async (id: string, email: string) => {
+    const isAdminUser = profiles.some(p => p.email === email && p.role === 'admin');
+    if (isAdminUser) {
+      alert(`⚠️ Não é possível remover o e-mail ${email} porque ele pertence a um Administrador. Remova o acesso de Admin primeiro na aba Usuários.`);
+      return;
+    }
+
     if (!window.confirm(`Remover autorização de ${email}?`)) return;
     await supabase.from('allowed_emails').delete().eq('id', id);
     loadEmails();
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedIds.length === 0) return;
+
+    // Identificar quais e-mails pertencem a admins para proteger
+    const adminEmails = profiles.filter(p => p.role === 'admin').map(p => p.email);
+    
+    const idsToDelete: string[] = [];
+    let skipCount = 0;
+    
+    for (const id of selectedIds) {
+      const item = allowedEmails.find(a => a.id === id);
+      if (item && adminEmails.includes(item.email)) {
+        skipCount++;
+      } else {
+        idsToDelete.push(id);
+      }
+    }
+
+    if (idsToDelete.length === 0) {
+      alert('⚠️ Todos os e-mails selecionados pertencem a Administradores e não podem ser removidos.');
+      return;
+    }
+
+    let confirmMsg = `Tem certeza que deseja remover os ${idsToDelete.length} e-mails selecionados?`;
+    if (skipCount > 0) {
+      confirmMsg += `\n\n(Nota de segurança: ${skipCount} e-mail(s) de Administrador foram protegidos e NÃO serão apagados).`;
+    }
+
+    if (!window.confirm(confirmMsg)) return;
+    
+    const chunkSize = 20; // Reduzido para 20 para garantir que a URL fique curta
+    let hasError = false;
+    let successCount = 0;
+    
+    for (let i = 0; i < idsToDelete.length; i += chunkSize) {
+      const chunk = idsToDelete.slice(i, i + chunkSize);
+      // Ao deletar por ID evitamos qualquer bug do PostgREST com caracteres especiais no e-mail
+      const { data, error } = await supabase.from('allowed_emails').delete().in('id', chunk).select('id');
+      if (error) {
+        console.error('Erro ao deletar lote:', error);
+        hasError = true;
+      } else if (data) {
+        successCount += data.length;
+      }
+    }
+    
+    if (hasError) {
+      alert(`Ocorreu um erro ao tentar remover alguns e-mails. ${successCount} foram removidos com sucesso.`);
+    } else {
+      alert(`✅ ${successCount} e-mails removidos com sucesso!`);
+    }
+    
+    setSelectedIds([]);
+    loadEmails();
+  };
+
+  const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.checked) {
+      const filtered = allowedEmails
+        .filter(item => emailFilter === 'todos' || item.user_group === emailFilter)
+        .filter(item => emailSearch === '' || 
+          item.email.toLowerCase().includes(emailSearch.toLowerCase()) ||
+          (item.cpf && item.cpf.includes(emailSearch))
+        );
+      setSelectedIds(filtered.map(a => a.id));
+    } else {
+      setSelectedIds([]);
+    }
+  };
+
+  const handleSelectId = (id: string) => {
+    setSelectedIds(prev => 
+      prev.includes(id) ? prev.filter(e => e !== id) : [...prev, id]
+    );
   };
 
   const handleToggleEligibility = async (email: string, currentStatus: boolean) => {
@@ -134,6 +250,43 @@ export default function AdminPanel() {
     loadProfiles();
   };
 
+  const handleDownloadEmails = () => {
+    if (allowedEmails.length === 0) { alert('Nenhum dado para exportar.'); return; }
+    const headers = ['E-mail', 'CPF', 'Grupo', 'Elegível', 'Data de Inclusão'];
+    const rows = allowedEmails.map(r => [
+      `"${r.email}"`,
+      `"${r.cpf || ''}"`,
+      `"${r.user_group}"`,
+      r.eligible === false ? 'Nao' : 'Sim',
+      `"${new Date(r.created_at).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}"`
+    ]);
+    const csv = [headers.join(';'), ...rows.map(r => r.join(';'))].join('\n');
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `participantes_${Date.now()}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  };
+
+  const executeCsvUpsert = async (data: any[]) => {
+    if (data.length === 0) return true;
+    const { error } = await supabase.from('allowed_emails').upsert(data, { onConflict: 'email' });
+    if (error) {
+      setCsvMessage(`Erro: ${error.message}`);
+      return false;
+    } else {
+      for (const item of data) {
+        const updateData: any = { user_group: item.user_group, eligible: item.eligible };
+        if (item.cpf) updateData.cpf = item.cpf;
+        await supabase.from('profiles').update(updateData).eq('email', item.email);
+      }
+      setCsvFile(null);
+      loadEmails();
+      loadProfiles();
+      return true;
+    }
+  };
+
   const handleCsvUpload = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!csvFile) return;
@@ -142,36 +295,121 @@ export default function AdminPanel() {
     reader.onload = async (event) => {
       const text = event.target?.result as string;
       const lines = text.split('\n').map(l => l.trim()).filter(l => l);
-      const toInsert = lines.map(line => {
+      
+      const parsed = lines.map(line => {
         const parts = line.split(',');
         const email = parts[0]?.trim();
-        let ug = parts[1]?.trim().toLowerCase();
-        if (ug !== 'entregador' && ug !== 'colaborador') ug = 'colaborador';
+        const cpf = parts[1]?.trim().replace(/\D/g, '') || null;
+        let ug = parts[2]?.trim().toLowerCase();
+        if (ug !== 'cliente' && ug !== 'colaborador') ug = 'colaborador';
         
         let eligible = true;
-        if (parts.length > 2) {
-          const elStr = parts[2]?.trim().toLowerCase();
+        if (parts.length > 3) {
+          const elStr = parts[3]?.trim().toLowerCase();
           if (elStr === 'inelegivel' || elStr === 'inelegível' || elStr === 'false' || elStr === 'nao' || elStr === 'não') {
             eligible = false;
           }
         }
         
-        return { email, user_group: ug, eligible };
+        return { email, cpf, user_group: ug, eligible };
       }).filter(i => i.email && i.email.includes('@'));
       
-      const { error } = await supabase.from('allowed_emails').upsert(toInsert, { onConflict: 'email' });
-      
-      if (error) {
-        setCsvMessage(`Erro: ${error.message}`);
-      } else {
-        // Atualiza instantaneamente os perfis (se já estiverem logados/criados)
-        for (const item of toInsert) {
-          await supabase.from('profiles').update({ eligible: item.eligible }).eq('email', item.email);
+      const existing = await fetchAllRows('allowed_emails', 'created_at', false);
+      const toUpdateOrInsert: any[] = [];
+      const conflicts: any[] = [];
+      const seenCpfsInCsv = new Map<string, string>();
+
+      parsed.forEach(item => {
+        if (item.cpf) {
+          const matchedByCpf = existing?.find(e => e.cpf === item.cpf);
+          if (matchedByCpf && matchedByCpf.email !== item.email) {
+            conflicts.push({ email_csv: item.email, reason: `CPF já associado a ${matchedByCpf.email}` });
+            return;
+          }
+          if (seenCpfsInCsv.has(item.cpf)) {
+            const firstEmail = seenCpfsInCsv.get(item.cpf);
+            if (firstEmail !== item.email) {
+              conflicts.push({ email_csv: item.email, reason: `CPF duplicado nesta mesma planilha (conflita com ${firstEmail})` });
+              return;
+            }
+          }
+          seenCpfsInCsv.set(item.cpf, item.email);
         }
-        setCsvMessage(`🎉 ${toInsert.length} e-mails carregados/atualizados!`);
+        toUpdateOrInsert.push(item);
+      });
+
+      setCsvConflicts(conflicts);
+      
+      if (toUpdateOrInsert.length > 0) {
+        setCsvMessage('Atualizando banco de dados...');
+        const success = await executeCsvUpsert(toUpdateOrInsert);
+        if (success) {
+          setCsvMessage(conflicts.length > 0 ? `Foram processados ${toUpdateOrInsert.length} e-mails. Algumas linhas foram ignoradas.` : 'Lista importada com sucesso!');
+        }
+      } else {
+        if (conflicts.length > 0) {
+          setCsvMessage('Nenhum registro válido. Todos apresentaram conflitos de duplicidade.');
+        } else {
+          setCsvMessage('Nenhum dado válido encontrado na planilha.');
+        }
+      }
+    };
+    reader.readAsText(csvFile);
+  };
+
+  const handleCsvRemove = async () => {
+    if (!csvFile) return;
+    setCsvMessage('Lendo planilha para remoção...');
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      const text = event.target?.result as string;
+      const lines = text.split('\n').map(l => l.trim()).filter(l => l);
+      
+      // Assume a primeira coluna é o e-mail (ignora cabeçalhos se não for e-mail)
+      const rawEmailsToRemove = lines.map(line => {
+        const parts = line.split(',');
+        return parts[0]?.trim();
+      }).filter(email => email && email.includes('@'));
+
+      // Filtrar admins
+      const adminEmails = profiles.filter(p => p.role === 'admin').map(p => p.email);
+      const emailsToRemove = rawEmailsToRemove.filter(e => !adminEmails.includes(e));
+      const adminsToSkip = rawEmailsToRemove.filter(e => adminEmails.includes(e));
+      
+      if (emailsToRemove.length === 0) {
+        setCsvMessage('Nenhum e-mail válido para remover (os encontrados são admins protegidos).');
+        return;
+      }
+
+      let confirmMsg = `Tem certeza que deseja remover ${emailsToRemove.length} e-mails autorizados em massa?`;
+      if (adminsToSkip.length > 0) {
+        confirmMsg += `\n\n(Nota de segurança: ${adminsToSkip.length} e-mail(s) de Administrador na planilha foram protegidos).`;
+      }
+
+      if (!window.confirm(confirmMsg)) {
+        setCsvMessage('');
+        return;
+      }
+
+      const chunkSize = 50;
+      let hasError = false;
+      let lastError = '';
+      
+      for (let i = 0; i < emailsToRemove.length; i += chunkSize) {
+        const chunk = emailsToRemove.slice(i, i + chunkSize);
+        const { error } = await supabase.from('allowed_emails').delete().in('email', chunk);
+        if (error) {
+          hasError = true;
+          lastError = error.message;
+        }
+      }
+      
+      if (hasError) {
+        setCsvMessage(`Erro ao remover alguns e-mails: ${lastError}`);
+      } else {
+        setCsvMessage(`🗑️ ${emailsToRemove.length} e-mails removidos com sucesso!`);
         setCsvFile(null); 
         loadEmails();
-        loadProfiles();
       }
     };
     reader.readAsText(csvFile);
@@ -179,8 +417,8 @@ export default function AdminPanel() {
 
   // ── Profiles ──────────────────────────────────────────────────────────────
   const loadProfiles = async () => {
-    const { data } = await supabase.from('profiles').select('*').order('points', { ascending: false });
-    if (data) setProfiles(data);
+    const data = await fetchAllRows('profiles', 'points', false);
+    setProfiles(data);
   };
 
   const handleToggleAdmin = async (id: string, currentRole: string) => {
@@ -209,8 +447,19 @@ export default function AdminPanel() {
 
   // ── Ranking ───────────────────────────────────────────────────────────────
   const loadRanking = async () => {
-    const { data: guessesData } = await supabase.from('guesses').select('points_earned, guess_score_a, guess_score_b, user_id').not('points_earned', 'is', null);
-    const { data: profilesData } = await supabase.from('profiles').select('id, name, email, user_group');
+    // Busca dados com paginação para evitar o limite de 1000 do supabase
+    let guessesData: any[] = [];
+    let from = 0;
+    const step = 1000;
+    while (true) {
+      const { data, error } = await supabase.from('guesses').select('points_earned, guess_score_a, guess_score_b, user_id').not('points_earned', 'is', null).range(from, from + step - 1);
+      if (error || !data || data.length === 0) break;
+      guessesData = [...guessesData, ...data];
+      if (data.length < step) break;
+      from += step;
+    }
+
+    const profilesData = await fetchAllRows('profiles', 'id', true);
     if (!profilesData) return;
     const statsMap: any = {};
     profilesData.forEach((p: any) => {
@@ -227,7 +476,13 @@ export default function AdminPanel() {
         } else if (g.points_earned === 1) statsMap[g.user_id].single_goal++;
       });
     }
-    const sorted = Object.values(statsMap).sort((a: any, b: any) => b.points - a.points);
+    const sorted = Object.values(statsMap).sort((a: any, b: any) => {
+      if (b.points !== a.points) return b.points - a.points;
+      if (b.exact !== a.exact) return b.exact - a.exact;
+      if (b.winner !== a.winner) return b.winner - a.winner;
+      if (b.tie !== a.tie) return b.tie - a.tie;
+      return b.single_goal - a.single_goal;
+    });
     setRanking(sorted);
   };
 
@@ -272,14 +527,22 @@ export default function AdminPanel() {
     loadMatches();
   };
 
-  const handleFinishMatch = async (matchId: string) => {
+  const handleFinishMatch = async (matchId: string, isFinished: boolean) => {
     const sA = scores[matchId]?.a;
     const sB = scores[matchId]?.b;
     if (sA === '' || sB === '') { alert('Digite o placar completo!'); return; }
-    if (!window.confirm('Encerrar o jogo e distribuir pontos?')) return;
-    const { error } = await supabase.rpc('finish_match', { p_match_id: matchId, p_real_score_a: parseInt(sA), p_real_score_b: parseInt(sB) });
-    if (error) alert(`Erro: ${error.message}`);
-    else { alert('Pontos distribuídos!'); loadMatches(); }
+    
+    if (isFinished) {
+      if (!window.confirm('Atenção: Este jogo já foi finalizado. Tem certeza que deseja RECALCULAR os pontos baseando-se nesse novo placar? Os pontos anteriores serão subtraídos e os novos serão somados.')) return;
+      const { error } = await supabase.rpc('recalculate_match', { p_match_id: matchId, p_new_score_a: parseInt(sA), p_new_score_b: parseInt(sB) });
+      if (error) alert(`Erro: ${error.message}`);
+      else { alert('Pontos recalculados com sucesso!'); loadMatches(); loadRanking(); }
+    } else {
+      if (!window.confirm('Encerrar o jogo e distribuir pontos?')) return;
+      const { error } = await supabase.rpc('finish_match', { p_match_id: matchId, p_real_score_a: parseInt(sA), p_real_score_b: parseInt(sB) });
+      if (error) alert(`Erro: ${error.message}`);
+      else { alert('Pontos distribuídos!'); loadMatches(); loadRanking(); }
+    }
   };
 
   const handleSyncApi = async () => {
@@ -448,12 +711,11 @@ export default function AdminPanel() {
   };
 
   const loadColabEmails = async () => {
-    const { data } = await supabase
-      .from('allowed_emails')
-      .select('*')
-      .eq('user_group', 'colaborador')
-      .order('created_at', { ascending: false });
-    if (data) setColabEmails(data);
+    const data = await fetchAllRows('allowed_emails', 'created_at', false);
+    if (data) {
+      const colabs = data.filter(e => e.user_group === 'colaborador');
+      setColabEmails(colabs);
+    }
   };
 
   const handleTogglePaid = async (id: string, currentPaid: boolean) => {
@@ -494,13 +756,13 @@ export default function AdminPanel() {
   };
 
   // ── Render ────────────────────────────────────────────────────────────────
-  if (checking) return <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: '#0F1849', color: '#fff', fontSize: '1.2rem' }}>Verificando credenciais...</div>;
+  if (checking) return <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', backgroundColor: 'var(--color-primary-dark)', color: '#fff', fontSize: '1.2rem' }}>Verificando credenciais...</div>;
   if (!isAdmin) return <div style={{ padding: '4rem', textAlign: 'center' }}><h1 style={{ color: '#ef4444' }}>Acesso Negado</h1><Link href="/">Voltar</Link></div>;
 
   return (
     <div style={{ minHeight: '100vh', backgroundColor: '#f0f4f8' }}>
       {/* HEADER */}
-      <header style={{ backgroundColor: '#0F1849', padding: '1rem 2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
+      <header style={{ backgroundColor: 'var(--color-primary-dark)', padding: '1rem 2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
         <div>
           <h1 style={{ color: '#fff', margin: 0, fontSize: '1.5rem', fontWeight: '900' }}>⚙️ Painel do Administrador</h1>
           <Link href="/dashboard" style={{ color: '#93c5fd', fontSize: '0.85rem' }}>← Voltar ao Dashboard</Link>
@@ -516,9 +778,9 @@ export default function AdminPanel() {
             style={{
               padding: '1rem 1.5rem',
               border: 'none',
-              borderBottom: activeTab === tab ? '3px solid #2C67EA' : '3px solid transparent',
+              borderBottom: activeTab === tab ? '3px solid var(--color-primary-light)' : '3px solid transparent',
               backgroundColor: 'transparent',
-              color: activeTab === tab ? '#2C67EA' : '#64748b',
+              color: activeTab === tab ? 'var(--color-primary-light)' : '#64748b',
               fontWeight: activeTab === tab ? '700' : '500',
               cursor: 'pointer',
               whiteSpace: 'nowrap',
@@ -537,16 +799,16 @@ export default function AdminPanel() {
         {activeTab === 'ranking' && (
           <div style={{ backgroundColor: 'white', padding: '1.5rem', borderRadius: '12px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
-              <h2 style={{ margin: 0, color: '#0F1849', fontSize: '1.5rem' }}>🏆 Top 50 — Ranking Detalhado</h2>
+              <h2 style={{ margin: 0, color: 'var(--color-primary-dark)', fontSize: '1.5rem' }}>🏆 Top 50 — Ranking Detalhado</h2>
               <div style={{ display: 'flex', gap: '0.8rem', flexWrap: 'wrap' }}>
                 <select value={rankingFilter} onChange={e => setRankingFilter(e.target.value)} style={{ padding: '0.6rem', borderRadius: '6px', border: '1px solid #ccc' }}>
-                  <option value="entregador">Entregadores</option>
+                  <option value="cliente">clientees</option>
                   <option value="colaborador">Colaboradores</option>
                 </select>
                 <button onClick={handleDownloadRanking} style={{ padding: '0.6rem 1.2rem', backgroundColor: '#eab308', color: '#000', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>
                   📊 Exportar Excel
                 </button>
-                <button onClick={loadRanking} style={{ padding: '0.6rem 1rem', backgroundColor: '#2C67EA', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>
+                <button onClick={loadRanking} style={{ padding: '0.6rem 1rem', backgroundColor: 'var(--color-primary-light)', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>
                   🔄 Atualizar
                 </button>
               </div>
@@ -571,14 +833,14 @@ export default function AdminPanel() {
                         {i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}º`}
                       </td>
                       <td style={{ padding: '0.8rem' }}>
-                        <span style={{ fontWeight: '700', color: '#0F1849' }}>{r.name}</span>
+                        <span style={{ fontWeight: '700', color: 'var(--color-primary-dark)' }}>{r.name}</span>
                         <br /><span style={{ fontSize: '0.75rem', color: '#888' }}>{r.email}</span>
                       </td>
-                      <td style={{ padding: '0.8rem', textAlign: 'center', fontSize: '1.1rem', fontWeight: '900', color: '#2C67EA' }}>{r.points}</td>
-                      <td style={{ padding: '0.8rem', textAlign: 'center', color: '#0F1849', fontWeight: '600' }}>{r.exact}</td>
-                      <td style={{ padding: '0.8rem', textAlign: 'center', color: '#0F1849', fontWeight: '600' }}>{r.winner}</td>
-                      <td style={{ padding: '0.8rem', textAlign: 'center', color: '#0F1849', fontWeight: '600' }}>{r.tie}</td>
-                      <td style={{ padding: '0.8rem', textAlign: 'center', color: '#0F1849', fontWeight: '600' }}>{r.single_goal}</td>
+                      <td style={{ padding: '0.8rem', textAlign: 'center', fontSize: '1.1rem', fontWeight: '900', color: 'var(--color-primary-light)' }}>{r.points}</td>
+                      <td style={{ padding: '0.8rem', textAlign: 'center', color: 'var(--color-primary-dark)', fontWeight: '600' }}>{r.exact}</td>
+                      <td style={{ padding: '0.8rem', textAlign: 'center', color: 'var(--color-primary-dark)', fontWeight: '600' }}>{r.winner}</td>
+                      <td style={{ padding: '0.8rem', textAlign: 'center', color: 'var(--color-primary-dark)', fontWeight: '600' }}>{r.tie}</td>
+                      <td style={{ padding: '0.8rem', textAlign: 'center', color: 'var(--color-primary-dark)', fontWeight: '600' }}>{r.single_goal}</td>
                     </tr>
                   ))}
                   {ranking.filter(r => r.user_group === rankingFilter).length === 0 && (
@@ -593,24 +855,45 @@ export default function AdminPanel() {
         {/* ── TAB: USUÁRIOS ──────────────────────────────────────────── */}
         {activeTab === 'usuarios' && (
           <div style={{ backgroundColor: 'white', padding: '1.5rem', borderRadius: '12px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
-              <h2 style={{ margin: 0, color: '#0F1849' }}>👑 Gestão de Usuários</h2>
-              <button onClick={loadProfiles} style={{ padding: '0.5rem 1rem', backgroundColor: '#2C67EA', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>🔄 Atualizar</button>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
+              <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                <h2 style={{ margin: 0, color: 'var(--color-primary-dark)' }}>👑 Gestão de Usuários</h2>
+                <input type="text" placeholder="Pesquisar nome, e-mail ou CPF..." value={profileSearch} onChange={e => setProfileSearch(e.target.value)} style={{ padding: '0.4rem', borderRadius: '4px', border: '1px solid #ccc' }} />
+                <select value={profileFilter} onChange={e => setProfileFilter(e.target.value)} style={{ padding: '0.4rem', borderRadius: '4px', border: '1px solid #ccc' }}>
+                  <option value="todos">Todos</option>
+                  <option value="cliente">clientees</option>
+                  <option value="colaborador">Colaboradores</option>
+                </select>
+              </div>
+              <button onClick={loadProfiles} style={{ padding: '0.5rem 1rem', backgroundColor: 'var(--color-primary-light)', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>🔄 Atualizar</button>
             </div>
             <div style={{ maxHeight: '500px', overflowY: 'auto', border: '1px solid #eee', borderRadius: '8px' }}>
-              {profiles.map(user => (
+              {profiles
+                .filter(user => profileFilter === 'todos' || user.user_group === profileFilter)
+                .filter(user => profileSearch === '' || 
+                  user.email.toLowerCase().includes(profileSearch.toLowerCase()) || 
+                  user.name.toLowerCase().includes(profileSearch.toLowerCase()) || 
+                  (user.cpf && user.cpf.includes(profileSearch))
+                )
+                .slice(0, 100)
+                .map(user => (
                 <div key={user.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1rem', borderBottom: '1px solid #f0f0f0', backgroundColor: user.role === 'admin' ? '#eff6ff' : '#fff' }}>
                   <div>
-                    <span style={{ fontWeight: 'bold', color: '#0F1849' }}>{user.name}</span>
+                    <span style={{ fontWeight: 'bold', color: 'var(--color-primary-dark)' }}>{user.name}</span>
                     {user.role === 'admin' && <span style={{ fontSize: '0.7rem', backgroundColor: '#eab308', color: '#000', padding: '2px 6px', borderRadius: '10px', marginLeft: '0.5rem' }}>Admin</span>}
                     <br />
-                    <span style={{ fontSize: '0.8rem', color: '#888' }}>{user.email} · {user.user_group} · {user.points} pts</span>
+                    <span style={{ fontSize: '0.8rem', color: '#888' }}>{user.email} · CPF: {user.cpf || 'Não inf.'} · {user.user_group} · {user.points} pts</span>
                   </div>
-                  <button onClick={() => handleToggleAdmin(user.id, user.role)} style={{ padding: '0.4rem 0.8rem', backgroundColor: user.role === 'admin' ? '#ef4444' : '#2C67EA', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 'bold' }}>
+                  <button onClick={() => handleToggleAdmin(user.id, user.role)} style={{ padding: '0.4rem 0.8rem', backgroundColor: user.role === 'admin' ? '#ef4444' : 'var(--color-primary-light)', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 'bold' }}>
                     {user.role === 'admin' ? 'Remover Admin' : 'Tornar Admin'}
                   </button>
                 </div>
               ))}
+              {profiles.filter(user => profileFilter === 'todos' || user.user_group === profileFilter)
+                 .filter(user => profileSearch === '' || user.email.toLowerCase().includes(profileSearch.toLowerCase()) || user.name.toLowerCase().includes(profileSearch.toLowerCase()) || (user.cpf && user.cpf.includes(profileSearch)))
+                 .length > 100 && (
+                <p style={{ padding: '1rem', textAlign: 'center', color: '#888', fontSize: '0.85rem' }}>Mostrando os 100 primeiros resultados. Refine a busca para encontrar mais usuários.</p>
+              )}
               {profiles.length === 0 && <p style={{ padding: '2rem', textAlign: 'center', color: '#888' }}>Nenhum usuário cadastrado ainda.</p>}
             </div>
           </div>
@@ -619,37 +902,115 @@ export default function AdminPanel() {
         {/* ── TAB: E-MAILS ───────────────────────────────────────────── */}
         {activeTab === 'emails' && (
           <div style={{ backgroundColor: 'white', padding: '1.5rem', borderRadius: '12px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}>
-            <h2 style={{ color: '#0F1849', marginBottom: '1.5rem' }}>📧 Cadastro de Participantes</h2>
+            <h2 style={{ color: 'var(--color-primary-dark)', marginBottom: '1.5rem' }}>📧 Cadastro de Participantes</h2>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px,1fr))', gap: '2rem', marginBottom: '2rem' }}>
               <div>
                 <h3 style={{ color: '#666', marginBottom: '1rem' }}>Adicionar E-mail</h3>
                 <form onSubmit={handleAddEmail} style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                   <input type="email" placeholder="E-mail" value={emailToAdd} onChange={e => setEmailToAdd(e.target.value)} required style={{ padding: '0.8rem', borderRadius: '6px', border: '1px solid #ddd' }} />
+                  <input type="text" placeholder="CPF (Apenas números)" value={cpfToAdd} onChange={e => setCpfToAdd(e.target.value)} maxLength={14} style={{ padding: '0.8rem', borderRadius: '6px', border: '1px solid #ddd' }} />
                   <select value={emailGroup} onChange={e => setEmailGroup(e.target.value)} style={{ padding: '0.8rem', borderRadius: '6px', border: '1px solid #ddd' }}>
-                    <option value="entregador">Entregador</option>
+                    <option value="cliente">cliente</option>
                     <option value="colaborador">Colaborador</option>
                   </select>
-                  <button type="submit" style={{ padding: '0.8rem', backgroundColor: '#2C67EA', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Adicionar</button>
+                  <button type="submit" style={{ padding: '0.8rem', backgroundColor: 'var(--color-primary-light)', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>Adicionar</button>
                 </form>
                 {emailMessage && <div style={{ marginTop: '0.5rem', color: '#16a34a', fontSize: '0.9rem' }}>{emailMessage}</div>}
               </div>
               <div>
-                <h3 style={{ color: '#666', marginBottom: '1rem' }}>Importar CSV</h3>
+                <h3 style={{ color: '#666', marginBottom: '0.5rem' }}>Importar CSV</h3>
+                <p style={{ fontSize: '0.8rem', color: '#888', marginBottom: '1rem' }}>
+                  Formato esperado (sem cabeçalho):<br/>
+                  <b>email,cpf,grupo,elegibilidade</b><br/>
+                  Ex: <i>joao@email.com,12345678900,cliente,sim</i>
+                </p>
                 <form onSubmit={handleCsvUpload} style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                   <input type="file" accept=".csv" onChange={e => setCsvFile(e.target.files ? e.target.files[0] : null)} style={{ padding: '0.5rem' }} />
-                  <button type="submit" disabled={!csvFile} style={{ padding: '0.8rem', backgroundColor: csvFile ? '#16a34a' : '#ccc', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: csvFile ? 'pointer' : 'not-allowed' }}>Enviar Planilha</button>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <button type="submit" disabled={!csvFile} style={{ flex: 1, padding: '0.8rem', backgroundColor: csvFile ? '#16a34a' : '#ccc', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: csvFile ? 'pointer' : 'not-allowed' }}>Adicionar em Massa</button>
+                    <button type="button" onClick={handleCsvRemove} disabled={!csvFile} style={{ flex: 1, padding: '0.8rem', backgroundColor: csvFile ? '#ef4444' : '#ccc', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 'bold', cursor: csvFile ? 'pointer' : 'not-allowed' }}>Remover em Massa</button>
+                  </div>
                 </form>
-                {csvMessage && <div style={{ marginTop: '0.5rem', color: '#2C67EA', fontSize: '0.9rem', fontWeight: 'bold' }}>{csvMessage}</div>}
+                {csvMessage && <div style={{ marginTop: '0.5rem', color: 'var(--color-primary-light)', fontSize: '0.9rem', fontWeight: 'bold' }}>{csvMessage}</div>}
+                {csvConflicts.length > 0 && (
+                  <div style={{ marginTop: '1rem', padding: '1rem', backgroundColor: '#fffbeb', border: '1px solid #fbbf24', borderRadius: '8px' }}>
+                    <h4 style={{ color: '#b45309', margin: '0 0 0.5rem 0' }}>Itens Ignorados (Duplicidade)</h4>
+                    <p style={{ fontSize: '0.8rem', color: '#92400e', margin: '0 0 1rem 0' }}>Os seguintes itens não foram importados pois o CPF já pertence a outra conta.</p>
+                    <ul style={{ fontSize: '0.8rem', color: '#333', paddingLeft: '1.5rem', marginBottom: '0' }}>
+                      {csvConflicts.slice(0, 10).map((c, i) => (
+                        <li key={i}><b>{c.email_csv}</b>: {c.reason}</li>
+                      ))}
+                      {csvConflicts.length > 10 && <li>...e mais {csvConflicts.length - 10} itens</li>}
+                    </ul>
+                  </div>
+                )}
               </div>
             </div>
-            <h3 style={{ color: '#666', marginBottom: '1rem' }}>E-mails Autorizados ({allowedEmails.length})</h3>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '1rem' }}>
+              <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                <h3 style={{ color: '#666', margin: 0 }}>E-mails Autorizados ({allowedEmails.length})</h3>
+                <button onClick={handleDownloadEmails} style={{ padding: '0.4rem 0.8rem', backgroundColor: '#eab308', color: '#000', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>
+                  📊 Exportar Planilha
+                </button>
+                <input type="text" placeholder="Pesquisar e-mail ou CPF..." value={emailSearch} onChange={e => setEmailSearch(e.target.value)} style={{ padding: '0.4rem', borderRadius: '4px', border: '1px solid #ccc' }} />
+                <select value={emailFilter} onChange={e => setEmailFilter(e.target.value)} style={{ padding: '0.4rem', borderRadius: '4px', border: '1px solid #ccc' }}>
+                  <option value="todos">Todos</option>
+                  <option value="cliente">clientees</option>
+                  <option value="colaborador">Colaboradores</option>
+                </select>
+              </div>
+              {selectedIds.length > 0 && (
+                <button onClick={handleBulkDelete} style={{ padding: '0.4rem 0.8rem', backgroundColor: '#ef4444', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  🗑️ Remover Selecionados ({selectedIds.length})
+                </button>
+              )}
+            </div>
+            
             <div style={{ maxHeight: '350px', overflowY: 'auto', border: '1px solid #eee', borderRadius: '8px' }}>
-              {allowedEmails.map(item => (
-                <div key={item.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.8rem', borderBottom: '1px solid #f0f0f0', backgroundColor: '#fff' }}>
-                  <div>
-                    <span style={{ fontWeight: 'bold', fontSize: '0.9rem', color: '#0F1849' }}>{item.email}</span>
-                    <br /><span style={{ fontSize: '0.75rem', color: '#64748b', textTransform: 'uppercase' }}>{item.user_group}</span>
-                    {item.eligible === false && <span style={{ marginLeft: '0.5rem', backgroundColor: '#ef4444', color: '#fff', fontSize: '0.7rem', padding: '2px 6px', borderRadius: '4px' }}>Inelegível</span>}
+              {allowedEmails.length > 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', padding: '0.8rem', borderBottom: '2px solid #eee', backgroundColor: '#f9fafb', position: 'sticky', top: 0, zIndex: 10 }}>
+                  <input 
+                    type="checkbox" 
+                    checked={
+                      selectedIds.length > 0 && 
+                      selectedIds.length === allowedEmails
+                        .filter(item => emailFilter === 'todos' || item.user_group === emailFilter)
+                        .filter(item => emailSearch === '' || 
+                          item.email.toLowerCase().includes(emailSearch.toLowerCase()) ||
+                          (item.cpf && item.cpf.includes(emailSearch))
+                        )
+                        .length
+                    } 
+                    onChange={handleSelectAll} 
+                    style={{ marginRight: '1rem', width: '1.2rem', height: '1.2rem', cursor: 'pointer' }}
+                  />
+                  <span style={{ fontWeight: 'bold', color: '#666', fontSize: '0.85rem' }}>Selecionar Todos visíveis</span>
+                </div>
+              )}
+              {allowedEmails
+                .filter(item => emailFilter === 'todos' || item.user_group === emailFilter)
+                .filter(item => emailSearch === '' || 
+                  item.email.toLowerCase().includes(emailSearch.toLowerCase()) ||
+                  (item.cpf && item.cpf.includes(emailSearch))
+                )
+                .slice(0, 100)
+                .map(item => (
+                <div key={item.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.8rem', borderBottom: '1px solid #f0f0f0', backgroundColor: selectedIds.includes(item.id) ? '#eff6ff' : '#fff' }}>
+                  <div style={{ display: 'flex', alignItems: 'center' }}>
+                    <input 
+                      type="checkbox" 
+                      checked={selectedIds.includes(item.id)} 
+                      onChange={() => handleSelectId(item.id)} 
+                      style={{ marginRight: '1rem', width: '1.2rem', height: '1.2rem', cursor: 'pointer' }}
+                    />
+                    <div>
+                      <span style={{ fontWeight: 'bold', fontSize: '0.9rem', color: 'var(--color-primary-dark)' }}>{item.email}</span>
+                      <br />
+                      <span style={{ fontSize: '0.75rem', color: '#64748b', textTransform: 'uppercase' }}>
+                        {item.user_group} {item.cpf ? `· CPF: ${item.cpf}` : ''}
+                      </span>
+                      {item.eligible === false && <span style={{ marginLeft: '0.5rem', backgroundColor: '#ef4444', color: '#fff', fontSize: '0.7rem', padding: '2px 6px', borderRadius: '4px' }}>Inelegível</span>}
+                    </div>
                   </div>
                   <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
                     <button onClick={() => handleToggleEligibility(item.email, item.eligible !== false)} style={{ padding: '0.4rem 0.8rem', backgroundColor: item.eligible !== false ? '#10b981' : '#ef4444', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 'bold' }}>
@@ -659,6 +1020,11 @@ export default function AdminPanel() {
                   </div>
                 </div>
               ))}
+              {allowedEmails.filter(item => emailFilter === 'todos' || item.user_group === emailFilter)
+                 .filter(item => emailSearch === '' || item.email.toLowerCase().includes(emailSearch.toLowerCase()) || (item.cpf && item.cpf.includes(emailSearch)))
+                 .length > 100 && (
+                <p style={{ padding: '1rem', textAlign: 'center', color: '#888', fontSize: '0.85rem' }}>Mostrando os 100 primeiros resultados. Refine a busca para encontrar mais e-mails.</p>
+              )}
             </div>
           </div>
         )}
@@ -666,7 +1032,7 @@ export default function AdminPanel() {
         {/* ── TAB: DICIONÁRIO ─────────────────────────────────────────── */}
         {activeTab === 'dicionario' && (
           <div style={{ backgroundColor: 'white', padding: '1.5rem', borderRadius: '12px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}>
-            <h2 style={{ color: '#0F1849', marginBottom: '0.5rem' }}>🌍 Dicionário de Seleções</h2>
+            <h2 style={{ color: 'var(--color-primary-dark)', marginBottom: '0.5rem' }}>🌍 Dicionário de Seleções</h2>
             <p style={{ color: '#666', fontSize: '0.9rem', marginBottom: '1.5rem' }}>Traduza os nomes das seleções e defina a sigla ISO de 2 letras para exibir a bandeira correta.</p>
             <div style={{ maxHeight: '500px', overflowY: 'auto', border: '1px solid #eee', borderRadius: '8px' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -689,7 +1055,7 @@ export default function AdminPanel() {
                         <input type="text" maxLength={6} value={t.flag_code} onChange={e => { const a = [...translations]; a[index] = { ...a[index], flag_code: e.target.value.toLowerCase() }; setTranslations(a); }} style={{ width: '60px', padding: '0.5rem', borderRadius: '4px', border: '1px solid #ccc', textAlign: 'center' }} />
                       </td>
                       <td style={{ padding: '0.4rem' }}>
-                        <button onClick={async () => { await supabase.from('team_translations').update({ pt_name: t.pt_name, flag_code: t.flag_code }).eq('api_name', t.api_name); }} style={{ padding: '0.4rem 0.8rem', backgroundColor: '#2C67EA', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', fontSize: '0.8rem' }}>
+                        <button onClick={async () => { await supabase.from('team_translations').update({ pt_name: t.pt_name, flag_code: t.flag_code }).eq('api_name', t.api_name); }} style={{ padding: '0.4rem 0.8rem', backgroundColor: 'var(--color-primary-light)', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', fontSize: '0.8rem' }}>
                           ✅ Salvar
                         </button>
                       </td>
@@ -709,46 +1075,51 @@ export default function AdminPanel() {
           <div>
             {/* Ações */}
             <div style={{ display: 'flex', gap: '0.8rem', marginBottom: '1.5rem', flexWrap: 'wrap' }}>
-              <button onClick={handleSyncApi} style={{ padding: '0.7rem 1.2rem', backgroundColor: '#2C67EA', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>🔄 Sincronizar Copa 2026</button>
+              <button onClick={handleSyncApi} style={{ padding: '0.7rem 1.2rem', backgroundColor: 'var(--color-primary-light)', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>🔄 Sincronizar Copa 2026</button>
               <button onClick={handleFixGroupNames} style={{ padding: '0.7rem 1.2rem', backgroundColor: '#7c3aed', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>🏷️ Corrigir Nomes das Fases</button>
               <button onClick={handleDownloadAudit} style={{ padding: '0.7rem 1.2rem', backgroundColor: '#10b981', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>📊 Baixar Auditoria</button>
               <button onClick={handleClearAll} style={{ padding: '0.7rem 1.2rem', backgroundColor: '#ef4444', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}>🗑 Limpar Palpites/Reset</button>
             </div>
-            {matchMessage && <div style={{ marginBottom: '1rem', padding: '0.8rem', backgroundColor: '#eff6ff', borderRadius: '8px', color: '#2C67EA', fontWeight: 'bold' }}>{matchMessage}</div>}
+            {matchMessage && <div style={{ marginBottom: '1rem', padding: '0.8rem', backgroundColor: '#eff6ff', borderRadius: '8px', color: 'var(--color-primary-light)', fontWeight: 'bold' }}>{matchMessage}</div>}
 
             {/* Agendar jogo */}
             <div style={{ backgroundColor: 'white', padding: '1.5rem', borderRadius: '12px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)', marginBottom: '1.5rem' }}>
-              <h3 style={{ color: '#0F1849', marginBottom: '1rem' }}>➕ Agendar Nova Partida</h3>
+              <h3 style={{ color: 'var(--color-primary-dark)', marginBottom: '1rem' }}>➕ Agendar Nova Partida</h3>
               <form onSubmit={handleAddMatch} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px,1fr))', gap: '1rem', alignItems: 'end' }}>
                 <div><label style={{ display: 'block', fontSize: '0.8rem', marginBottom: '0.3rem' }}>Time A</label><input type="text" value={teamA} onChange={e => setTeamA(e.target.value)} required style={{ width: '100%', padding: '0.8rem', borderRadius: '6px', border: '1px solid #ddd' }} /></div>
                 <div><label style={{ display: 'block', fontSize: '0.8rem', marginBottom: '0.3rem' }}>Sigla A (ex: br)</label><input type="text" value={flagA} onChange={e => setFlagA(e.target.value.toLowerCase())} required style={{ width: '100%', padding: '0.8rem', borderRadius: '6px', border: '1px solid #ddd' }} /></div>
                 <div><label style={{ display: 'block', fontSize: '0.8rem', marginBottom: '0.3rem' }}>Time B</label><input type="text" value={teamB} onChange={e => setTeamB(e.target.value)} required style={{ width: '100%', padding: '0.8rem', borderRadius: '6px', border: '1px solid #ddd' }} /></div>
                 <div><label style={{ display: 'block', fontSize: '0.8rem', marginBottom: '0.3rem' }}>Sigla B (ex: ar)</label><input type="text" value={flagB} onChange={e => setFlagB(e.target.value.toLowerCase())} required style={{ width: '100%', padding: '0.8rem', borderRadius: '6px', border: '1px solid #ddd' }} /></div>
                 <div style={{ gridColumn: '1 / -1' }}><label style={{ display: 'block', fontSize: '0.8rem', marginBottom: '0.3rem' }}>Data e Hora</label><input type="datetime-local" value={matchDate} onChange={e => setMatchDate(e.target.value)} required style={{ width: '100%', padding: '0.8rem', borderRadius: '6px', border: '1px solid #ddd' }} /></div>
-                <button type="submit" style={{ gridColumn: '1 / -1', padding: '0.8rem', backgroundColor: '#0F1849', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>Salvar Jogo</button>
+                <button type="submit" style={{ gridColumn: '1 / -1', padding: '0.8rem', backgroundColor: 'var(--color-primary-dark)', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>Salvar Jogo</button>
               </form>
             </div>
 
             {/* Lista jogos */}
             <div style={{ backgroundColor: 'white', padding: '1.5rem', borderRadius: '12px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}>
-              <h3 style={{ color: '#0F1849', marginBottom: '1rem' }}>Partidas Cadastradas ({matches.length})</h3>
+              <h3 style={{ color: 'var(--color-primary-dark)', marginBottom: '1rem' }}>Partidas Cadastradas ({matches.length})</h3>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.8rem', maxHeight: '600px', overflowY: 'auto' }}>
                 {matches.map(match => (
                   <div key={match.id} style={{ display: 'flex', alignItems: 'center', gap: '1rem', padding: '0.8rem 1rem', border: '1px solid #eee', borderRadius: '8px', flexWrap: 'wrap' }}>
                     <button onClick={() => handleDeleteMatch(match.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '1rem' }} title="Excluir">🗑️</button>
                     <div style={{ flex: 1, minWidth: '200px' }}>
                       <div style={{ fontSize: '0.75rem', color: '#888' }}>{new Date(match.match_date).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })} | {match.status === 'pending' ? '⏳ Pendente' : '✅ Encerrado'}</div>
-                      <div style={{ fontWeight: 'bold', color: '#0F1849' }}>{match.team_a} x {match.team_b}</div>
+                      <div style={{ fontWeight: 'bold', color: 'var(--color-primary-dark)' }}>{match.team_a} x {match.team_b}</div>
                     </div>
                     {match.status === 'pending' ? (
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                         <input type="number" min="0" value={scores[match.id]?.a || ''} onChange={e => setScores({ ...scores, [match.id]: { ...scores[match.id], a: e.target.value } })} style={{ width: '45px', padding: '0.4rem', textAlign: 'center', borderRadius: '4px', border: '1px solid #ccc' }} />
                         <span>x</span>
                         <input type="number" min="0" value={scores[match.id]?.b || ''} onChange={e => setScores({ ...scores, [match.id]: { ...scores[match.id], b: e.target.value } })} style={{ width: '45px', padding: '0.4rem', textAlign: 'center', borderRadius: '4px', border: '1px solid #ccc' }} />
-                        <button onClick={() => handleFinishMatch(match.id)} style={{ padding: '0.4rem 0.8rem', backgroundColor: '#eab308', color: '#000', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '0.8rem' }}>Encerrar</button>
+                        <button onClick={() => handleFinishMatch(match.id, false)} style={{ padding: '0.4rem 0.8rem', backgroundColor: '#eab308', color: '#000', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '0.8rem' }}>Encerrar</button>
                       </div>
                     ) : (
-                      <span style={{ fontWeight: 'bold', color: '#10b981' }}>{match.score_a} x {match.score_b}</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                        <input type="number" min="0" placeholder={match.score_a} value={scores[match.id]?.a || ''} onChange={e => setScores({ ...scores, [match.id]: { ...scores[match.id], a: e.target.value } })} style={{ width: '45px', padding: '0.4rem', textAlign: 'center', borderRadius: '4px', border: '1px solid #ccc' }} />
+                        <span style={{ fontWeight: 'bold', color: '#10b981' }}>x</span>
+                        <input type="number" min="0" placeholder={match.score_b} value={scores[match.id]?.b || ''} onChange={e => setScores({ ...scores, [match.id]: { ...scores[match.id], b: e.target.value } })} style={{ width: '45px', padding: '0.4rem', textAlign: 'center', borderRadius: '4px', border: '1px solid #ccc' }} />
+                        <button onClick={() => handleFinishMatch(match.id, true)} style={{ padding: '0.4rem 0.8rem', backgroundColor: '#ef4444', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '0.8rem' }}>Recalcular</button>
+                      </div>
                     )}
                   </div>
                 ))}
@@ -762,11 +1133,11 @@ export default function AdminPanel() {
         {activeTab === 'fases' && (
           <div>
             <div style={{ backgroundColor: 'white', padding: '1.5rem', borderRadius: '12px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)', marginBottom: '1.5rem' }}>
-              <h2 style={{ color: '#0F1849', marginBottom: '0.5rem' }}>🔓 Controle de Fases</h2>
+              <h2 style={{ color: 'var(--color-primary-dark)', marginBottom: '0.5rem' }}>🔓 Controle de Fases</h2>
               <p style={{ color: '#666', fontSize: '0.9rem', marginBottom: '1.5rem' }}>
                 A <strong>Fase de Grupos</strong> já está sempre liberada. Quando as fases eliminatórias estiverem definidas (com os times confirmados), abra cada fase aqui para liberar os palpites dos usuários.
               </p>
-              {phaseMessage && <div style={{ marginBottom: '1rem', padding: '0.8rem', backgroundColor: '#eff6ff', borderRadius: '8px', color: '#2C67EA', fontWeight: 'bold' }}>{phaseMessage}</div>}
+              {phaseMessage && <div style={{ marginBottom: '1rem', padding: '0.8rem', backgroundColor: '#eff6ff', borderRadius: '8px', color: 'var(--color-primary-light)', fontWeight: 'bold' }}>{phaseMessage}</div>}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.8rem' }}>
                 {PHASES.map(phase => {
                   const isOpen = phase.key === 'group' ? true : (openPhases[phase.key] ?? false);
@@ -774,7 +1145,7 @@ export default function AdminPanel() {
                   return (
                     <div key={phase.key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1.2rem 1.5rem', border: `2px solid ${isOpen ? '#10b981' : '#e2e8f0'}`, borderRadius: '12px', backgroundColor: isOpen ? '#f0fdf4' : '#f8fafc' }}>
                       <div>
-                        <span style={{ fontWeight: '700', color: '#0F1849', fontSize: '1rem' }}>{phase.label}</span>
+                        <span style={{ fontWeight: '700', color: 'var(--color-primary-dark)', fontSize: '1rem' }}>{phase.label}</span>
                         {isFixed && <span style={{ marginLeft: '0.8rem', fontSize: '0.7rem', backgroundColor: '#10b981', color: '#fff', padding: '2px 8px', borderRadius: '10px' }}>Sempre aberta</span>}
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
@@ -821,7 +1192,7 @@ CREATE POLICY "admin_all" ON public.phase_settings FOR ALL
   USING ((SELECT role FROM profiles WHERE id = auth.uid()) = 'admin');
 CREATE POLICY "public_read" ON public.phase_settings FOR SELECT USING (true);`}
                 </pre>
-                <button onClick={loadPhases} style={{ marginTop: '1rem', padding: '0.6rem 1.2rem', backgroundColor: '#2C67EA', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>
+                <button onClick={loadPhases} style={{ marginTop: '1rem', padding: '0.6rem 1.2rem', backgroundColor: 'var(--color-primary-light)', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>
                   🔄 Verificar novamente
                 </button>
               </div>
@@ -834,62 +1205,6 @@ CREATE POLICY "public_read" ON public.phase_settings FOR SELECT USING (true);`}
             )}
           </div>
         )}
-
-                        </div>
-                        <button
-                          onClick={() => handleTogglePaid(item.id, item.paid ?? false)}
-                          style={{
-                            padding: '0.5rem 1rem',
-                            backgroundColor: item.paid ? '#ef4444' : '#10b981',
-                            color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '0.85rem',
-                            minWidth: '120px'
-                          }}
-                        >
-                          {item.paid ? '❌ Desmarcar' : '✅ Marcar como Pago'}
-                        </button>
-                      </div>
-                    ))}
-                    {colabEmails.length === 0 && <p style={{ padding: '2rem', textAlign: 'center', color: '#888' }}>Nenhum colaborador cadastrado ainda. Adicione pela aba 📧 Participantes.</p>}
-                  </div>
-                </div>
-
-                {/* RESUMO DE PREMIAÇÃO */}
-                {totalPool > 0 && (
-                  <div style={{ backgroundColor: '#0F1849', padding: '1.5rem', borderRadius: '12px', color: '#fff' }}>
-                    <h2 style={{ margin: '0 0 1.2rem 0', color: '#fff' }}>🏆 Premiação Calculada</h2>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
-                      {[
-                        { pos: '🥇 1º', value: `R$ ${prize1.toFixed(2)}`, pct: poolSettings.pct_1st },
-                        { pos: '🥈 2º', value: `R$ ${prize2.toFixed(2)}`, pct: poolSettings.pct_2nd },
-                        { pos: '🥉 3º', value: `R$ ${prize3.toFixed(2)}`, pct: poolSettings.pct_3rd },
-                      ].map(item => (
-                        <div key={item.pos} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.8rem 1rem', backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: '8px' }}>
-                          <span style={{ fontWeight: 'bold', fontSize: '1rem' }}>{item.pos} lugar</span>
-                          <div style={{ textAlign: 'right' }}>
-                            <span style={{ fontSize: '1.2rem', fontWeight: '900', color: '#eab308' }}>{item.value}</span>
-                            <span style={{ fontSize: '0.75rem', color: '#94a3b8', marginLeft: '0.5rem' }}>({item.pct}%)</span>
-                          </div>
-                        </div>
-                      ))}
-                      {[4,5,6,7,8,9,10].map(pos => {
-                        const realKey = `prize_${pos}th`;
-                        const prize = (poolSettings as any)[realKey];
-                        if (!prize) return null;
-                        return (
-                          <div key={pos} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.6rem 1rem', backgroundColor: 'rgba(255,255,255,0.06)', borderRadius: '8px' }}>
-                            <span style={{ color: '#94a3b8' }}>🎁 {pos}º lugar</span>
-                            <span style={{ color: '#e2e8f0', fontWeight: '600' }}>{prize}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-              </>)}
-            </div>
-          );
-        })()}
 
       </main>
     </div>

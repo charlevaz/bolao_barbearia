@@ -12,6 +12,57 @@ export default function Login() {
   const router = useRouter();
   const [checking, setChecking] = useState(true);
 
+  // Interceptar e traduzir erros do Supabase Auth no cliente
+  const originalSignUp = supabase.auth.signUp.bind(supabase.auth);
+  supabase.auth.signUp = async (credentials) => {
+    const res = await originalSignUp(credentials);
+    if (res.error) {
+      const translateAuthError = (message: string): string => {
+        const msg = message.toLowerCase();
+        if (msg.includes('database error saving new user') || msg.includes('database error')) {
+          return 'E-mail não autorizado pela Gestão.';
+        }
+        if (msg.includes('invalid login credentials')) {
+          return 'E-mail ou senha incorretos.';
+        }
+        if (msg.includes('user already registered')) {
+          return 'Este e-mail já está cadastrado.';
+        }
+        if (msg.includes('email not confirmed')) {
+          return 'Por favor, confirme seu e-mail.';
+        }
+        if (msg.includes('password should be at least 6 characters')) {
+          return 'A senha deve ter pelo menos 6 caracteres.';
+        }
+        if (msg.includes('signup requires a valid email')) {
+          return 'Por favor, insira um e-mail válido.';
+        }
+        return message;
+      };
+      (res.error as any).message = translateAuthError(res.error.message);
+    }
+    return res;
+  };
+
+  const originalSignIn = supabase.auth.signInWithPassword.bind(supabase.auth);
+  supabase.auth.signInWithPassword = async (credentials) => {
+    const res = await originalSignIn(credentials);
+    if (res.error) {
+      const translateAuthError = (message: string): string => {
+        const msg = message.toLowerCase();
+        if (msg.includes('invalid login credentials')) {
+          return 'E-mail ou senha incorretos.';
+        }
+        if (msg.includes('email not confirmed')) {
+          return 'Por favor, confirme seu e-mail.';
+        }
+        return message;
+      };
+      (res.error as any).message = translateAuthError(res.error.message);
+    }
+    return res;
+  };
+
   useEffect(() => {
     // Escutar mudanças de autenticação (quando o usuário loga com sucesso)
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
@@ -37,11 +88,11 @@ export default function Login() {
   return (
     <div style={{ padding: '4rem 2rem', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
       
-      <Link href="/" style={{ color: '#2C67EA', marginBottom: '2rem' }}>← Voltar para Home</Link>
+      <Link href="/" style={{ color: 'var(--color-primary-light)', marginBottom: '2rem' }}>← Voltar para Home</Link>
 
       <div style={{ width: '100%', maxWidth: '400px', backgroundColor: 'white', padding: '2rem', borderRadius: '8px', color: '#333', boxShadow: '0 10px 25px rgba(0,0,0,0.2)' }}>
         
-        <h1 style={{ fontSize: '1.5rem', marginBottom: '1rem', textAlign: 'center', color: '#0F1849' }}>
+        <h1 style={{ fontSize: '1.5rem', marginBottom: '1rem', textAlign: 'center', color: 'var(--color-primary-dark)' }}>
           Identificação VIP
         </h1>
         <p style={{ textAlign: 'center', fontSize: '0.9rem', marginBottom: '2rem', color: '#666' }}>
@@ -55,7 +106,7 @@ export default function Login() {
             variables: {
               default: {
                 colors: {
-                  brand: '#2C67EA',
+                  brand: 'var(--color-primary-light)',
                   brandAccent: '#1a4bb3',
                   messageText: '#ff4444',
                 }

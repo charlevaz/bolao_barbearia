@@ -14,7 +14,28 @@ export default function ResetPassword() {
   const [isUpdating, setIsUpdating] = useState(false);
 
   useEffect(() => {
-    // Escuta o evento de recuperação de senha do Supabase
+    // 1. Verificar se existe um code na URL
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get('code');
+
+    if (code) {
+      // FIX: O componente Auth UI do Supabase tem um bug conhecido onde ele salva o PKCE verifier
+      // no localStorage em vez de usar os cookies do @supabase/ssr.
+      // Aqui nós pegamos o verifier do localStorage e forçamos ele para os cookies antes de validar.
+      for (let i = 0; i < window.localStorage.length; i++) {
+        const key = window.localStorage.key(i);
+        if (key && key.endsWith('-code-verifier')) {
+          document.cookie = `${key}=${window.localStorage.getItem(key)}; path=/; max-age=3600; SameSite=Lax`;
+        }
+      }
+
+      // O SDK do Supabase (@supabase/supabase-js) detecta o parâmetro ?code= na URL 
+      // e faz a troca (exchange) automaticamente. Não precisamos (e não devemos) 
+      // chamar exchangeCodeForSession manualmente aqui, senão ele tenta usar o código 
+      // duas vezes e gera um falso erro de "PKCE code verifier not found".
+    }
+
+    // 2. Escuta o evento de recuperação de senha do Supabase
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === 'PASSWORD_RECOVERY') {
         setMessage('Autenticado com sucesso para recuperação. Digite sua nova senha abaixo.');
@@ -50,10 +71,10 @@ export default function ResetPassword() {
   return (
     <div style={{ padding: '4rem 2rem', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
       
-      <Link href="/login" style={{ color: '#2C67EA', marginBottom: '2rem' }}>← Voltar para o Login</Link>
+      <Link href="/login" style={{ color: 'var(--color-primary-light)', marginBottom: '2rem' }}>← Voltar para o Login</Link>
 
       <div style={{ width: '100%', maxWidth: '400px', backgroundColor: 'white', padding: '2rem', borderRadius: '8px', color: '#333', boxShadow: '0 10px 25px rgba(0,0,0,0.2)' }}>
-        <h1 style={{ fontSize: '1.5rem', marginBottom: '1.5rem', textAlign: 'center', color: '#0F1849' }}>
+        <h1 style={{ fontSize: '1.5rem', marginBottom: '1.5rem', textAlign: 'center', color: 'var(--color-primary-dark)' }}>
           Redefinir Senha
         </h1>
 
@@ -78,7 +99,7 @@ export default function ResetPassword() {
             style={{ 
               width: '100%', 
               padding: '0.8rem', 
-              backgroundColor: '#2C67EA', 
+              backgroundColor: 'var(--color-primary-light)', 
               color: 'white', 
               border: 'none', 
               borderRadius: '6px', 

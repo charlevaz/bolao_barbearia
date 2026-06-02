@@ -13,25 +13,27 @@ export default async function Home() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: '2rem' }}>
       
-      {/* Logotipos */}
-      <div style={{ display: 'flex', gap: '1rem', marginBottom: '2rem', flexWrap: 'wrap', justifyContent: 'center', backgroundColor: '#fff', padding: '1rem', borderRadius: '16px' }}>
-        <img src="/logo-sumarezinho.png" alt="EntreGô Sumarezinho" style={{ height: '80px', width: 'auto', objectFit: 'contain' }} />
-        <img src="/logo-aldeota.png" alt="EntreGô Aldeota" style={{ height: '80px', width: 'auto', objectFit: 'contain' }} />
-        <img src="/logo-recreio.png" alt="EntreGô Recreio" style={{ height: '80px', width: 'auto', objectFit: 'contain' }} />
+      {/* Logotipo */}
+      <div style={{ 
+        display: 'flex', 
+        marginBottom: '2rem', 
+        justifyContent: 'center'
+      }}>
+        <img src="/logo-capitao.png" alt="Barbearia Capitão da Chácara" style={{ height: '150px', width: 'auto', objectFit: 'contain' }} />
       </div>
 
       <h1 style={{ fontSize: '2.5rem', marginBottom: '1rem', textAlign: 'center' }}>
-        Bolão <span style={{ color: '#2C67EA' }}>EntreGô Sumarezinho, Aldeota e Recreio</span>
+        Bolão <span style={{ color: 'var(--color-primary-light)' }}>Capitão da Chácara</span>
       </h1>
       
       <p style={{ fontSize: '1.2rem', marginBottom: '3rem', textAlign: 'center', maxWidth: '600px', opacity: 0.9 }}>
-        Participe do nosso bolão exclusivo da Copa do Mundo 2026. Acerte os placares, acumule pontos e ganhe prêmios incríveis!
+        Participe do nosso bolão exclusivo. Acerte os placares dos jogos, acumule pontos e ganhe prêmios incríveis como cortes de cabelo e muito mais! Exclusivo para clientes da Barbearia.
       </p>
 
       <div style={{ display: 'flex', gap: '1rem', flexDirection: 'column', width: '100%', maxWidth: '300px' }}>
         <Link href="/login" style={{ 
-          backgroundColor: '#2C67EA', 
-          color: '#FFFFFF', 
+          backgroundColor: 'var(--color-primary-light)', 
+          color: '#0f1c3f', 
           border: 'none', 
           padding: '1rem', 
           borderRadius: '8px', 
@@ -46,8 +48,8 @@ export default async function Home() {
         </Link>
         <Link href="/regras" style={{ 
           backgroundColor: 'transparent', 
-          color: '#FFFFFF', 
-          border: '2px solid #2C67EA', 
+          color: 'var(--color-primary-light)', 
+          border: '2px solid var(--color-primary-light)', 
           padding: '1rem', 
           borderRadius: '8px', 
           fontSize: '1.1rem', 

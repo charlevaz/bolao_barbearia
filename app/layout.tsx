@@ -2,8 +2,8 @@ import './globals.css'
 import type { Metadata } from 'next'
 
 export const metadata: Metadata = {
-  title: 'Bolão Entrego Sumarezinho',
-  description: 'Sistema de Bolão da Copa do Mundo 2026',
+  title: 'Bolão da Barbearia Capitão',
+  description: 'Sistema de Bolão da Barbearia Capitão da Chácara',
 }
 
 export default function RootLayout({

@@ -74,7 +74,7 @@ export default function Dashboard() {
             .select('id', { count: 'exact', head: true })
             .eq('user_group', profileData.user_group)
             .eq('eligible', true)
-            .gt('points', profileData.points);
+            .or(`points.gt.${profileData.points},and(points.eq.${profileData.points},exact_scores.gt.${profileData.exact_scores})`);
             
           setRankPos((count || 0) + 1);
         } else {
@@ -87,17 +87,22 @@ export default function Dashboard() {
           .eq('user_group', profileData.user_group)
           .eq('eligible', true)
           .order('points', { ascending: false })
+          .order('exact_scores', { ascending: false })
           .limit(10);
         
         if (topData) setTopUsers(topData);
       }
 
-      // 3. Carregar Jogos
-      const { data: matchesData } = await supabase
-        .from('matches')
-        .select('*')
-        .order('match_date', { ascending: true });
-        
+      // 3-6. Carregar Jogos, Palpites, Traduções e Fases em PARALELO (otimização de performance)
+      const [matchesRes, guessesRes, transRes, phasesRes] = await Promise.all([
+        supabase.from('matches').select('*').order('match_date', { ascending: true }),
+        supabase.from('guesses').select('*').eq('user_id', user.id),
+        supabase.from('team_translations').select('*'),
+        supabase.from('phase_settings').select('*'),
+      ]);
+
+      // Processar Jogos
+      const matchesData = matchesRes.data;
       if (matchesData && matchesData.length > 0) {
         setMatches(matchesData);
         
@@ -124,12 +129,8 @@ export default function Dashboard() {
         if (daysFormat.length > 0) setSelectedDay(daysFormat[0].date);
       }
 
-      // 4. Carregar Palpites
-      const { data: guessesData } = await supabase
-        .from('guesses')
-        .select('*')
-        .eq('user_id', user.id);
-        
+      // Processar Palpites
+      const guessesData = guessesRes.data;
       if (guessesData) {
         setGuesses(guessesData);
         const initialInputs: any = {};
@@ -139,8 +140,8 @@ export default function Dashboard() {
         setInputScores(initialInputs);
       }
 
-      // 5. Carregar Dicionário de Traduções
-      const { data: transData } = await supabase.from('team_translations').select('*');
+      // Processar Traduções
+      const transData = transRes.data;
       if (transData) {
         const tMap: any = {};
         transData.forEach(t => {
@@ -149,8 +150,8 @@ export default function Dashboard() {
         setTranslations(tMap);
       }
 
-      // 6. Carregar configurações de fases
-      const { data: phasesData } = await supabase.from('phase_settings').select('*');
+      // Processar Fases
+      const phasesData = phasesRes.data;
       if (phasesData) {
         const pMap: any = {};
         phasesData.forEach((p: any) => { pMap[p.phase_key] = p.is_open; });
@@ -175,7 +176,7 @@ export default function Dashboard() {
     setInputScores(prev => {
       const current = prev[matchId] || { a: null, b: null };
       const currentVal = current[team] ?? 0;
-      const newVal = Math.max(0, currentVal + delta);
+      const newVal = Math.min(99, Math.max(0, currentVal + delta));
       return { ...prev, [matchId]: { ...current, [team]: newVal } };
     });
   };
@@ -215,6 +216,18 @@ export default function Dashboard() {
     if (error) {
       if (error.message.includes('Acesso Negado')) {
         setMessage({...message, [matchId]: '❌ Palpite bloqueado (Falta menos de 1h)'});
+      } else if (error.message.includes('guesses_user_match_unique') || error.message.includes('duplicate key')) {
+        // Constraint UNIQUE violada — palpite já existe (ex: duas abas abertas). Forçar UPDATE.
+        const { data: existingData } = await supabase.from('guesses').select('id').eq('user_id', profile.id).eq('match_id', matchId).single();
+        if (existingData) {
+          await supabase.from('guesses').update({ guess_score_a: scoreA, guess_score_b: scoreB }).eq('id', existingData.id);
+          setMessage({...message, [matchId]: '✅ Salvo!'});
+          const { data } = await supabase.from('guesses').select('*').eq('user_id', profile.id);
+          if (data) setGuesses(data);
+          setTimeout(() => setMessage(prev => ({...prev, [matchId]: ''})), 2000);
+          return;
+        }
+        setMessage({...message, [matchId]: `Erro: ${error.message}`});
       } else {
         setMessage({...message, [matchId]: `Erro: ${error.message}`});
       }
@@ -275,9 +288,10 @@ export default function Dashboard() {
     const g = groupName.toLowerCase();
     if (g.startsWith('group') || g.startsWith('grupo')) return null; // fase de grupos = sempre aberta
     if (g.includes('round of 32') || g.includes('oitavas')) return 'round_of_32';
-    if (g.includes('round of 16') || g.includes('quartas')) return 'round_of_16';
-    if (g.includes('quarter') || g.includes('semi')) return 'quarter';
-    if (g.includes('semi') || g.includes('final') && g.includes('3')) return 'semi';
+    if (g.includes('round of 16')) return 'round_of_16';
+    if (g.includes('third place') || g.includes('terceiro')) return 'semi'; // 3º lugar abre junto com semi
+    if (g.includes('semi')) return 'semi';
+    if (g.includes('quarter') || g.includes('quartas')) return 'quarter';
     if (g.includes('final')) return 'final';
     return 'final'; // qualquer fase não reconhecida = trata como eliminatória bloqueada
   };
@@ -304,7 +318,7 @@ export default function Dashboard() {
   };
 
   if (loading) {
-    return <div style={{ minHeight: '100vh', backgroundColor: '#f0f4f8', display: 'flex', justifyContent: 'center', alignItems: 'center', color: '#0F1849' }}>Carregando sua área...</div>;
+    return <div style={{ minHeight: '100vh', backgroundColor: '#f0f4f8', display: 'flex', justifyContent: 'center', alignItems: 'center', color: 'var(--color-primary-dark)' }}>Carregando sua área...</div>;
   }
 
   const filteredMatches = matches.filter(m => {
@@ -319,7 +333,7 @@ export default function Dashboard() {
       {showNameModal && (
         <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
           <div style={{ backgroundColor: '#fff', padding: '2rem', borderRadius: '12px', width: '90%', maxWidth: '400px', boxShadow: '0 10px 25px rgba(0,0,0,0.2)' }}>
-            <h2 style={{ color: '#0F1849', marginTop: 0, marginBottom: '1rem' }}>Como devemos te chamar?</h2>
+            <h2 style={{ color: 'var(--color-primary-dark)', marginTop: 0, marginBottom: '1rem' }}>Como devemos te chamar?</h2>
             <p style={{ color: '#666', fontSize: '0.9rem', marginBottom: '1.5rem' }}>Para que os outros participantes te reconheçam no ranking, informe o seu nome completo ou apelido.</p>
             <form onSubmit={handleSaveName} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
               <input 
@@ -330,7 +344,7 @@ export default function Dashboard() {
                 required 
                 style={{ padding: '0.8rem', borderRadius: '8px', border: '1px solid #ccc', fontSize: '1rem' }}
               />
-              <button type="submit" style={{ padding: '0.8rem', backgroundColor: '#2C67EA', color: '#fff', border: 'none', borderRadius: '8px', fontWeight: 'bold', fontSize: '1rem', cursor: 'pointer' }}>
+              <button type="submit" style={{ padding: '0.8rem', backgroundColor: 'var(--color-primary-light)', color: '#fff', border: 'none', borderRadius: '8px', fontWeight: 'bold', fontSize: '1rem', cursor: 'pointer' }}>
                 Salvar Nome
               </button>
             </form>
@@ -341,9 +355,9 @@ export default function Dashboard() {
 
 
       {/* HEADER TOP */}
-      <header style={{ backgroundColor: '#0F1849', padding: '1rem 2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: '#fff', boxShadow: '0 4px 10px rgba(0,0,0,0.1)', flexWrap: 'wrap', gap: '1rem' }}>
+      <header style={{ backgroundColor: 'var(--color-primary-dark)', padding: '1rem 2rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: '#fff', boxShadow: '0 4px 10px rgba(0,0,0,0.1)', flexWrap: 'wrap', gap: '1rem' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-          <div style={{ width: '40px', height: '40px', borderRadius: '50%', backgroundColor: '#2C67EA', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', color: '#fff' }}>
+          <div style={{ width: '40px', height: '40px', borderRadius: '50%', backgroundColor: 'var(--color-primary-light)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', color: '#fff' }}>
             {profile?.name?.charAt(0).toUpperCase()}
           </div>
           <div>
@@ -382,8 +396,8 @@ export default function Dashboard() {
                   style={{ 
                     flexShrink: 0,
                     padding: '0.8rem 1.2rem', 
-                    backgroundColor: selectedDay === d.date ? '#2C67EA' : '#fff', 
-                    border: selectedDay === d.date ? '2px solid #2C67EA' : '1px solid #ddd',
+                    backgroundColor: selectedDay === d.date ? 'var(--color-primary-light)' : '#fff', 
+                    border: selectedDay === d.date ? '2px solid var(--color-primary-light)' : '1px solid #ddd',
                     borderRadius: '12px',
                     color: selectedDay === d.date ? '#fff' : '#666',
                     cursor: 'pointer',
@@ -404,9 +418,9 @@ export default function Dashboard() {
               <span style={{ fontSize: '0.9rem', color: '#666', fontWeight: 'bold' }}>{guesses.length} de {matches.length} palpites feitos</span>
               <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', width: '50%' }}>
                 <div style={{ flex: 1, height: '10px', backgroundColor: '#e2e8f0', borderRadius: '5px', overflow: 'hidden' }}>
-                  <div style={{ width: `${progressPercent}%`, height: '100%', backgroundColor: '#2C67EA' }}></div>
+                  <div style={{ width: `${progressPercent}%`, height: '100%', backgroundColor: 'var(--color-primary-light)' }}></div>
                 </div>
-                <span style={{ fontSize: '0.9rem', color: '#2C67EA', fontWeight: 'bold' }}>{progressPercent}%</span>
+                <span style={{ fontSize: '0.9rem', color: 'var(--color-primary-light)', fontWeight: 'bold' }}>{progressPercent}%</span>
               </div>
             </div>
 
@@ -445,7 +459,7 @@ export default function Dashboard() {
                             ⚠️ Sem palpite
                           </span>
                         )}
-                        <span style={{ fontSize: '0.75rem', fontWeight: 'bold', padding: '0.3rem 0.8rem', borderRadius: '20px', border: locked ? '1px solid #ef4444' : '1px solid #2C67EA', color: locked ? '#ef4444' : '#2C67EA', backgroundColor: locked ? '#fef2f2' : '#eff6ff' }}>
+                        <span style={{ fontSize: '0.75rem', fontWeight: 'bold', padding: '0.3rem 0.8rem', borderRadius: '20px', border: locked ? '1px solid #ef4444' : '1px solid var(--color-primary-light)', color: locked ? '#ef4444' : 'var(--color-primary-light)', backgroundColor: locked ? '#fef2f2' : '#eff6ff' }}>
                           {locked ? '🔒 Encerrado' : `🕒 ${calculateDaysLeft(match.match_date)}`}
                         </span>
                       </div>
@@ -453,7 +467,7 @@ export default function Dashboard() {
                     </div>
 
                     {/* INFO DO JOGO */}
-                    <div style={{ textAlign: 'center', marginBottom: '1.5rem', color: '#0F1849', fontSize: '0.85rem' }}>
+                    <div style={{ textAlign: 'center', marginBottom: '1.5rem', color: 'var(--color-primary-dark)', fontSize: '0.85rem' }}>
                       <span style={{ fontWeight: '900' }}>{translatePhaseName(match.group_name)}</span> • {formatTimeBrasilia(match.match_date)} • {match.venue || 'Estádio A Definir'}
                     </div>
 
@@ -507,7 +521,7 @@ export default function Dashboard() {
                       <div style={{ display: 'flex', justifyContent: 'center', marginTop: '2rem', flexDirection: 'column', alignItems: 'center' }}>
                         <button 
                           onClick={() => handleSaveGuess(match.id)}
-                          style={{ padding: '0.8rem 2rem', backgroundColor: '#2C67EA', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', width: '100%', maxWidth: '300px', boxShadow: '0 4px 10px rgba(44, 103, 234, 0.3)' }}
+                          style={{ padding: '0.8rem 2rem', backgroundColor: 'var(--color-primary-light)', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', width: '100%', maxWidth: '300px', boxShadow: '0 4px 10px rgba(44, 103, 234, 0.3)' }}
                         >
                           {myGuess ? 'Atualizar Palpite' : 'Confirmar Palpite'}
                         </button>
@@ -522,7 +536,7 @@ export default function Dashboard() {
                     {/* Resultado Real */}
                     {match.status === 'finished' && (
                       <div style={{ marginTop: '1.5rem', backgroundColor: '#f8fafc', padding: '1rem', borderRadius: '8px', textAlign: 'center', border: '1px solid #e2e8f0' }}>
-                        <p style={{ margin: 0, fontSize: '0.9rem', color: '#64748b' }}>Resultado Oficial: <strong style={{ color: '#0F1849' }}>{match.score_a} x {match.score_b}</strong></p>
+                        <p style={{ margin: 0, fontSize: '0.9rem', color: '#64748b' }}>Resultado Oficial: <strong style={{ color: 'var(--color-primary-dark)' }}>{match.score_a} x {match.score_b}</strong></p>
                         <p style={{ margin: '0.5rem 0 0 0', fontSize: '0.9rem', color: '#10b981', fontWeight: 'bold' }}>Você ganhou +{myGuess?.points_earned || 0} pontos</p>
                       </div>
                     )}
@@ -537,7 +551,7 @@ export default function Dashboard() {
           {/* LADO DIREITO: RANKING */}
           <aside style={{ flex: '1 1 300px', maxWidth: '400px' }}>
             <div style={{ backgroundColor: '#fff', borderRadius: '16px', padding: '1.5rem', boxShadow: '0 4px 15px rgba(0,0,0,0.05)', border: '1px solid #eee', position: 'sticky', top: '2rem' }}>
-              <h2 style={{ fontSize: '1.3rem', margin: '0 0 1.5rem 0', color: '#0F1849', borderBottom: '2px solid #f0f4f8', paddingBottom: '0.5rem' }}>
+              <h2 style={{ fontSize: '1.3rem', margin: '0 0 1.5rem 0', color: 'var(--color-primary-dark)', borderBottom: '2px solid #f0f4f8', paddingBottom: '0.5rem' }}>
                 🏆 Top 10 do Ranking
               </h2>
 
@@ -552,12 +566,12 @@ export default function Dashboard() {
                   const isMe = user.id === profile?.id;
 
                   return (
-                    <div key={user.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1rem', backgroundColor: isMe ? '#eff6ff' : '#f8fafc', borderRadius: '12px', border: isMe ? '2px solid #2C67EA' : '1px solid #e2e8f0' }}>
+                    <div key={user.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1rem', backgroundColor: isMe ? '#eff6ff' : '#f8fafc', borderRadius: '12px', border: isMe ? '2px solid var(--color-primary-light)' : '1px solid #e2e8f0' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
                         <span style={{ fontSize: '1.5rem' }}>{icon}</span>
                         <div style={{ display: 'flex', flexDirection: 'column' }}>
-                          <span style={{ fontSize: '0.95rem', fontWeight: '900', color: '#0F1849' }}>
-                            {user.name} {isMe && <span style={{ fontSize: '0.65rem', backgroundColor: '#2C67EA', color: '#fff', padding: '2px 6px', borderRadius: '10px', marginLeft: '0.5rem', verticalAlign: 'middle' }}>Você</span>}
+                          <span style={{ fontSize: '0.95rem', fontWeight: '900', color: 'var(--color-primary-dark)' }}>
+                            {user.name} {isMe && <span style={{ fontSize: '0.65rem', backgroundColor: 'var(--color-primary-light)', color: '#fff', padding: '2px 6px', borderRadius: '10px', marginLeft: '0.5rem', verticalAlign: 'middle' }}>Você</span>}
                           </span>
                           <span style={{ fontSize: '0.75rem', color: '#64748b' }}>{user.exact_scores} Placares Exatos</span>
                         </div>
